@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+  <meta charset="UTF-8">
+  <title>Aviator Mestre - PWA Completo com IA, OCR e Previsões</title>
+  <!-- Inclusão das bibliotecas necessárias -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@2.1.4/dist/tesseract.min.js"></script> <style>
+    body {
+      background-color: #111;
+      color: #eee;
+      font-family: 'Segoe UI', sans-serif;
+      text-align: center;
+      padding: 20px;
+      transition: background-color 0.3s, color 0.3s;
+    }
+    input, button, textarea {
+      padding: 10px;
+      margin: 5px;
+      font-size: 16px;
+      border: none;
+      border-radius: 6px;
+    }
+    button {
+      background-color: #ff0040;
+      color: white;
+      cursor: pointer;
+      transition: background-color 0.2s;
+    }
+    button:hover {
+      background-color: #ff3366;
+    }
+    canvas {
+      background: #222;
+      border-radius: 10px;
+      margin: 10px auto;
+    }
+    .alerta {
+      font-size: 18px;
+      margin: 10px;
+    }
+    #calor {
+      display: flex;
+      justify-content: center;
+      gap: 2px;
+      margin-top: 10px;
+    }
+    .bloco {
+      width: 10px;
+      height: 20px;
+    }
+    .baixa { background-color: red; }
+    .alta { background-color: lime; }
+    .neutra { background-color: orange; }
+  </style>
+  <!-- O manifesto será criado dinamicamente via script -->
+  <script>
+    // Cria e insere o manifesto PWA dinamicamente (em um data URL)
+    const manifest = {
+      name: "Aviator Mestre",
+      short_name: "AviatorMestre",
+      start_url: "./index.html",
+      display: "standalone",
+      background_color: "#111",
+      theme_color: "#ff0040",
+      icons: [
+        {
+          src: "https://via.placeholder.com/192x192.png?text=Icon", 
+          sizes: "192x192",
+          type: "image/png"
+        },
+        {
+          src: "https://via.placeholder.com/512x512.png?text=Icon", 
+          sizes: "512x512",
+          type: "image/png"
+        }
+      ]
+    };
+    const manifestBlob = new Blob([JSON.stringify(manifest)], {type: 'application/manifest+json'});
+    const manifestURL = URL.createObjectURL(manifestBlob);
+    const manifestLink = document.createElement('link');
+    manifestLink.rel = 'manifest';
+    manifestLink.href = manifestURL;
+    document.head.appendChild(manifestLink);
+  </script>
+</head>
+<body>
+  <h2>Aviator Mestre - App Completo PWA</h2>
+  <!-- Área para entrada de coeficientes -->
+  <textarea id="entrada" placeholder="Insira coeficientes manualmente ou cole do OCR..." rows="3" cols="50"></textarea><br>
+  
+  <!-- Botões para upload via câmera e para acionar a análise -->
+  <input type="file" id="imagem" accept="image/*" capture="environment">
+  <button onclick="usarOCR()">Escanear Imagem</button>
+  <button onclick="analisar(true)">Analisar Automático</button>
+  <button onclick="salvarDados()">Salvar Histórico</button>
+  
+  <!-- Exibição dos resultados -->
+  <div id="resultado" class="alerta"></div>
+  <div id="previsao" class="alerta"></div>
+  <div id="recomendacao" class="alerta"></div>
+  <div id="espera" class="alerta"></div>
+  <div id="cronometro" class="alerta"></div>
+  <div id="nivel" class="alerta"></div>
+  <div id="probabilidades" class="alerta"></div>
+  <div id="calor"></div>
+  
+  <!-- Gráficos de histórico e previsão -->
+  <canvas id="grafico" width="350" height="180"></canvas>
+  <canvas id="graficoPrevisao" width="350" height="180"></canvas>
+  
+  <script>
+    // Variáveis globais
+    const ctx = document.getElementById("grafico").getContext("2d");
+    const ctx2 = document.getElementById("graficoPrevisao").getContext("2d");
+    let historico = JSON.parse(localStorage.getItem("aviator_historico") || "[]");
+    let timestamps = JSON.parse(localStorage.getItem("aviator_timestamps") || "[]");
+    let nivel = 1;
+    let rodadasEsperadas = 0;  // Contador de rodadas até próxima entrada
+
+    // Configuração dos gráficos
+    const grafico = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: timestamps,
+        datasets: [{
+          label: 'Rodadas',
+          data: historico,
+          borderColor: 'cyan',
+          backgroundColor: 'rgba(0,255,255,0.1)',
+          tension: 0.3
+        }]
+      },
+      options: {
+        scales: { y: { beginAtZero: true } },
+        plugins: { legend: { labels: { color: '#fff' } } }
+      }
+    });
+    
+    const graficoPrevisao = new Chart(ctx2, {
+      type: 'line',
+      data: {
+        labels: [...timestamps, "Próxima"],
+        datasets: [{
+          label: 'Previsão',
+          data: [...historico, 0],
+          borderColor: 'yellow',
+          backgroundColor: 'rgba(255,255,0,0.2)',
+          tension: 0.3
+        }]
+      },
+      options: {
+        scales: { y: { beginAtZero: true } },
+        plugins: { legend: { labels: { color: '#fff' } } }
+      }
+    });
+    
+    // Função para classificar cada coeficiente
+    function classifica(x) {
+      if (x < 1.5) return 'baixa';
+      if (x >= 10) return 'alta';
+      return 'neutra';
+    }
+    
+    // Função para analisar os dados e fazer previsões (com "IA" simulada)
+    function analisar(auto = false) {
+      const entrada = document.getElementById("entrada").value;
+      const dados = entrada.split(/,|\s+/).map(e => parseFloat(e.trim())).filter(e => !isNaN(e));
+      if (dados.length === 0) return alert("Insira dados válidos.");
+      
+      // Registra o horário atual para cada novo dado
+      const now = new Date();
+      dados.forEach(() => timestamps.push(now.toLocaleTimeString()));
+      historico = [...historico, ...dados];
+      if (historico.length > 100) { historico = historico.slice(-100); }
+      if (timestamps.length > 100) { timestamps = timestamps.slice(-100); }
+      
+      // Atualiza o localStorage
+      localStorage.setItem("aviator_historico", JSON.stringify(historico));
+      localStorage.setItem("aviator_timestamps", JSON.stringify(timestamps));
+      
+      // Atualiza o gráfico principal
+      grafico.data.labels = timestamps;
+      grafico.data.datasets[0].data = historico;
+      grafico.update();
+      
+      // Atualiza o mapa de calor
+      const calorDiv = document.getElementById("calor");
+      calorDiv.innerHTML = "";
+      historico.forEach(v => {
+        let bloco = document.createElement("div");
+        bloco.className = "bloco " + classifica(v);
+        calorDiv.appendChild(bloco);
+      });
+      
+      // Processa as últimas 5 rodadas para decisão
+      const ultimos = historico.slice(-5);
+      const baixas = ultimos.filter(x => x < 1.5).length;
+      const altas = ultimos.filter(x => x >= 10).length;
+      let msg = "", recomendacao = "";
+      if (baixas >= 3) {
+        msg = '<span style="color:red">ALERTA: Provável rodada BAIXA</span>';
+        recomendacao = "Evite entrada agora. Padrão de risco detectado.";
+        rodadasEsperadas++;
+        nivel = Math.max(1, nivel - 1);
+      } else if (altas >= 1) {
+        msg = '<span style="color:lime">ALTA recente detectada</span>';
+        recomendacao = "Fique atento: possibilidade de nova alta ou crash.";
+        rodadasEsperadas++;
+        nivel++;
+      } else {
+        msg = '<span style="color:orange">Padrão estável</span>';
+        recomendacao = "Aguarde mais 1-2 rodadas para maior precisão.";
+        rodadasEsperadas++;
+      }
+      
+      // Calcula a média e prevê o próximo coeficiente
+      const media = historico.slice(-10).reduce((a, b) => a + b, 0) / Math.min(historico.length, 10);
+      const proxima = (media * 0.9 + (baixas >= 3 ? 1.2 : 2.5)).toFixed(2);
+      const decisao = parseFloat(proxima) > 1.8 ? 'ENTRAR' : 'AGUARDAR';
+      if (decisao === 'ENTRAR') { rodadasEsperadas = 0; }
+      
+      // Atualiza o gráfico de previsão
+      graficoPrevisao.data.labels = [...timestamps, "Próxima"];
+      graficoPrevisao.data.datasets[0].data = [...historico, parseFloat(proxima)];
+      graficoPrevisao.update();
+      
+      // Exibe as informações na tela
+      document.getElementById("resultado").innerHTML = msg;
+      document.getElementById("recomendacao").innerHTML = recomendacao + " - IA: " + decisao;
+      document.getElementById("nivel").innerHTML = "Nível de previsão: " + nivel;
+      document.getElementById("previsao").innerHTML = "Próximo coeficiente estimado: <b>" + proxima + "x</b> | Média atual: " + media.toFixed(2) + "x";
+      document.getElementById("espera").innerHTML = "Rodadas de espera antes da entrada: " + rodadasEsperadas;
+      
+      // Exibe probabilidades simuladas (exemplo simplificado)
+      const probText = `
+        Probabilidades estimadas:<br>
+        - 2x a 3x: 32%<br>
+        - 3x a 4x: 21%<br>
+        - 4x a 7x: 12%<br>
+        - 10x+: 5%<br>
+      `;
+      document.getElementById("probabilidades").innerHTML = probText;
+      
+      // Cronômetro para próxima rodada – modo automático
+      if (auto) {
+        let tempo = 15;
+        clearInterval(window.rodadaLoop);
+        window.rodadaLoop = setInterval(() => {
+          document.getElementById("cronometro").innerText = "Próxima rodada em: " + (tempo--) + "s";
+          if (tempo < 0) {
+            clearInterval(window.rodadaLoop);
+            analisar(true);
+          }
+        }, 1000);
+      }
+    }
+    
+    // Função para usar OCR via imagem (com pré-processamento básico)
+    function usarOCR() {
+      const imagem = document.getElementById("imagem").files[0];
+      if (!imagem) return alert("Selecione uma imagem primeiro.");
+      Tesseract.recognize(imagem, 'eng', {
+        tessedit_char_whitelist: "0123456789.xX "
+      }).then(({ data: { text } }) => {
+        const encontrados = text.match(/[0-9]+(?:\.[0-9]+)?x?/g);
+        if (encontrados) {
+          const limpo = encontrados.map(e => e.replace(/x/gi, "")).join(", ");
+          document.getElementById("entrada").value = limpo;
+          analisar(true);
+        } else {
+          alert("Nenhum coeficiente detectado na imagem.");
+        }
+      });
+    }
+    
+    // Função para salvar o histórico de rodadas em um arquivo .txt
+    function salvarDados() {
+      const blob = new Blob([historico.join(", ")], { type: "text/plain;charset=utf-8" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "historico_aviator.txt";
+      a.click();
+    }
+    
+    // Modo escuro automático com base no horário
+    function ajustarModoEscuro() {
+      const hour = new Date().getHours();
+      if (hour >= 18 || hour < 6) {
+        document.body.style.backgroundColor = "#000";
+        document.body.style.color = "#ddd";
+      } else {
+        document.body.style.backgroundColor = "#111";
+        document.body.style.color = "#eee";
+      }
+    }
+    ajustarModoEscuro();
+    setInterval(ajustarModoEscuro, 60 * 1000);
+    
+    // Registra o Service Worker dinamicamente via Blob
+    if ('serviceWorker' in navigator) {
+      const swCode = `
+        const CACHE_NAME = 'aviator-mestre-cache-v1';
+        const urlsToCache = [
+          '/',
+          '/index.html'
+        ];
+        self.addEventListener('install', event => {
+          event.waitUntil(
+            caches.open(CACHE_NAME).then(cache => cache.addAll(urlsToCache))
+          );
+        });
+        self.addEventListener('fetch', event => {
+          event.respondWith(
+            caches.match(event.request).then(response => response || fetch(event.request))
+          );
+        });
+        self.addEventListener('activate', event => {
+          const cacheWhitelist = [CACHE_NAME];
+          event.waitUntil(
+            caches.keys().then(cacheNames => {
+              return Promise.all(
+                cacheNames.map(cacheName => {
+                  if (cacheWhitelist.indexOf(cacheName) === -1) {
+                    return caches.delete(cacheName);
+                  }
+                })
+              );
+            })
+          );
+        });
+      `;
+      const swBlob = new Blob([swCode], { type: 'application/javascript' });
+      const swUrl = URL.createObjectURL(swBlob);
+      navigator.serviceWorker.register(swUrl)
+        .then(reg => console.log('Service Worker registrado:', reg.scope))
+        .catch(err => console.error('Erro ao registrar o Service Worker:', err));
+    }
+    
+  </script>
+</body>
+</html>
